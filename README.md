@@ -20,10 +20,3 @@ You can deploy this file using AWS CloudFormation Console or AWS CLI.
 
 ---
 
-## 🚀 How to Deploy (CLI)
-
-```bash
-aws cloudformation create-stack \
-  --stack-name cf-practice-stack \
-  --template-body file://advanced-web-stack.yaml \
-  --parameters ParameterKey=KeyName,ParameterValue=your-keypair
