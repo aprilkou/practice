@@ -1,0 +1,196 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'test-1113-stack'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: april-demo
+    Description: Project for test 
+
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+
+  BucketName:
+    Type: String
+    Description: Globally unique S3 bucket name (lowercase only)
+    AllowedPattern: '^[a-z0-9.-]+$'
+    ConstraintDescription: 'Bucket name must be lowercase letters, numbers, dot, or hyphen.'
+
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+      - t3.small
+    Description: EC2 instance type (keep small to reduce cost)
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Description: Amazon Linux 2023 latest AMI
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+  # -------------------------
+  # Networking: VPC + Subnet
+  # -------------------------
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-igw'
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs ''
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-subnet'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-public-rt'
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # -------------------------
+  # Security Group
+  # -------------------------
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH (22) and HTTP (80) for practice
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-web-sg'
+
+  # -------------------------
+  # S3 Bucket
+  # -------------------------
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+      VersioningConfiguration:
+        Status: Suspended
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Env
+          Value: practice
+        - Key: Owner
+          Value: april
+
+  # -------------------------
+  # EC2 Instance with Nginx
+  # -------------------------
+  WebServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref LatestAmiId
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          SubnetId: !Ref PublicSubnet
+          GroupSet:
+            - !Ref WebSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-web-ec2'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          dnf update -y
+          dnf install -y nginx
+          systemctl enable nginx
+          systemctl start nginx
+
+          cat << 'EOF' > /usr/share/nginx/html/index.html
+          <html>
+            <head>
+              <title>CFN Demo Page</title>
+            </head>
+            <body>
+              <h1>CloudFormation Demo</h1>
+              <p>This EC2 instance was created by CloudFormation.</p>
+              <p>S3 Bucket: ${BucketName}</p>
+              <p>Project: ${ProjectName}</p>
+            </body>
+          </html>
+          EOF
+
+Outputs:
+  VpcId:
+    Description: Created VPC ID
+    Value: !Ref VPC
+
+  SubnetId:
+    Description: Public Subnet ID
+    Value: !Ref PublicSubnet
+
+  InstanceId:
+    Description: Web EC2 Instance ID
+    Value: !Ref WebServer
+
+  InstancePublicIP:
+    Description: Public IP of the web server
+    Value: !GetAtt WebServer.PublicIp
+
+  WebURL:
+    Description: Access URL of Nginx web server
+    Value: !Sub 'http://${WebServer.PublicDnsName}'
+
+  CreatedBucketName:
+    Description: S3 bucket name
+    Value: !Ref WebBucket
